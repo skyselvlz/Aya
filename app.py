@@ -208,12 +208,9 @@ def handle_text_message(event):
         if not force:
             if user_id in players:
                 if not players[user_id].finished():
-                    message = ("Your game is still in progress.\n"
-                               "Use /restart to restart your progress.")
-                    return message
+                    return False
         set_user(user_id)
-        message = ("Starting game...")
-        return message
+        return True
 
     def bye():
         '''
@@ -244,18 +241,22 @@ def handle_text_message(event):
             bye()
 
         if command.lower().strip().startswith('start'):
-            msg = start_game(player_id)
-            link = players[player_id].next_link()
-            AyaBot.reply_message(
-                event.reply_token, [
-                    TextSendMessage(text=msg),
-                    ImageSendMessage(
-                        original_content_url=link,
-                        preview_image_url=link
-                    ),
-                    TextSendMessage(text="Who is this person?")
-                ]
-            )
+            if not start_game(player_id):
+                quickreply(("Your game is still in progress.\n"
+                            "Use /restart to restart your progress."))
+            else:
+                msg = "Starting game..."
+                link = players[player_id].next_link()
+                AyaBot.reply_message(
+                    event.reply_token, [
+                        TextSendMessage(text=msg),
+                        ImageSendMessage(
+                            original_content_url=link,
+                            preview_image_url=link
+                        ),
+                        TextSendMessage(text="Who is this person?")
+                    ]
+                )
 
         if command.lower().strip().startswith('restart'):
             msg = start_game(player_id, force=True)
