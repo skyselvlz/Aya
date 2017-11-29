@@ -6,7 +6,11 @@ LINE Bot mock-up
 from __future__ import unicode_literals
 
 import os
+import random
 import sys
+
+import dropbox
+import requests
 
 from flask import Flask, request, abort
 
@@ -16,7 +20,10 @@ from linebot import (
 from linebot.exceptions import (
     InvalidSignatureError
 )
-
+from linebot.models import (
+    MessageEvent, ImageSendMessage, TextMessage, TextSendMessage,
+    SourceGroup, SourceRoom
+)
 
 app = Flask(__name__)
 
@@ -30,8 +37,112 @@ if channel_access_token is None:
     print('Specify LINE_CHANNEL_ACCESS_TOKEN as environment variable.')
     sys.exit(1)
 
+dropbox_access_token = os.getenv('DROPBOX_ACCESS_TOKEN', None)
+dropbox_path = os.getenv('DROPBOX_PATH', None)
+dbx = dropbox.Dropbox(dropbox_access_token)
+
 AyaBot = LineBotApi(channel_access_token)
 handler = WebhookHandler(channel_secret)
+
+help_msg = ("/help: send this help message\n"
+            "/bye: make me leave this chat room\n"
+            "/start: start the game\n"
+            "/restart: restart the game\n"
+            "/answer <name>: answer the person in the picture with <name>\n"
+            "/pass : skip the current person\n"
+            "/status: show your current game's status\n")
+
+players = {}
+
+guys = [guy.name.strip('.jpg')
+        for guy in dbx.files_list_folder(dropbox_path + '/male').entries]
+
+gals = [gal.name.strip('.jpg')
+        for gal in dbx.files_list_folder(dropbox_path + '/female').entries]
+
+
+class Player:
+    '''
+    A player
+    '''
+    def __init__(self, user_id):
+        self.user_id = user_id
+        self.pick = ''
+        self.progress = {person: False for person in guys + gals}
+        self.correct = 0
+        self.wrong = 0
+        self.skipped = 0
+
+    def finished(self):
+        '''
+        Check if a user has finished their game.
+        '''
+        if self.progress:
+            return False
+        return True
+
+    def next_link(self):
+        '''
+        Get next random link.
+        '''
+        self.pick = random.choice(list(self.progress))
+        if self.pick in guys:
+            gender = 'male'
+        else:
+            gender = 'female'
+        headers = {
+            'Authorization': 'Bearer {}'.format(dropbox_access_token),
+            'Content-Type': 'application/json',
+        }
+        data = '"path": "{}/{}/{}.jpg"'.format(dropbox_path,
+                                               gender, self.pick)
+        data = '{' + data + '}'
+        url = 'https://api.dropboxapi.com/2/files/get_temporary_link'
+        link = requests.post(url, headers=headers,
+                             data=data).json()['link']
+        return link
+
+    def answer(self, name):
+        '''
+        Answer current pick.
+        '''
+        if self.pick in guys:
+            pronoun = ('He', 'him')
+        else:
+            pronoun = ('She', 'her')
+
+        if name.lower() == 'pass':
+            msg = ("{} is {}. Remember {} next time!"
+                   .format(pronoun[0], self.pick, pronoun[1]))
+            self.skipped += 1
+
+        else:
+            for word in name.title().split():
+                if word in self.pick:
+                    msg = ("You are correct! {} is {}."
+                           .format(pronoun[0], self.pick))
+                    self.correct += 1
+                    break
+            else:
+                msg = ("You are wrong! {} is {}. Remember {} next time!"
+                       .format(pronoun[0], self.pick, pronoun[1]))
+                self.wrong += 1
+
+        del self.progress[self.pick]
+        return msg
+
+    def status(self):
+        '''
+        Return current game's status.
+        '''
+        return ("{}/{} persons.\n"
+                "Correct: {} ({:.2f}%)\n"
+                "Wrong: {}\n"
+                "Skipped: {}\n"
+                .format(len(guys + gals) - len(self.progress),
+                        len(guys + gals), self.correct,
+                        self.correct/len(guys+gals)*100,
+                        self.wrong, self.skipped))
 
 
 @app.route("/callback", methods=['POST'])
@@ -53,6 +164,170 @@ def callback():
         abort(400)
 
     return 'OK'
+
+
+@handler.add(MessageEvent, message=TextMessage)
+def handle_text_message(event):
+    '''
+    Text message handler
+    '''
+    text = event.message.text
+
+    def quickreply(msg):
+        '''
+        Reply a message with msg as reply content.
+        '''
+        AyaBot.reply_message(
+            event.reply_token,
+            TextSendMessage(text=msg)
+        )
+
+    def check(user_id):
+        '''
+        Check if a user is eligible for a game.
+        '''
+        if user_id not in players:
+            msg = "You've never played the game before."
+        elif players[user_id].finished():
+            msg = "You have finished the game.\nUse /start to start a new one."
+        else:
+            return True
+        quickreply(msg)
+        return False
+
+    def set_user(user_id):
+        '''
+        Set a new user or reset an existing user.
+        '''
+        players[user_id] = Player(user_id)
+
+    def start_game(user_id, force=False):
+        '''
+        Start a new game for a user.
+        '''
+        if not force:
+            if user_id in players:
+                if not players[user_id].finished():
+                    message = ("Your game is still in progress.\n"
+                               "Use /restart to restart your progress.")
+                    return message
+        set_user(user_id)
+        message = ("Starting game...")
+        return message
+
+    def bye():
+        '''
+        Leave a chat room.
+        '''
+        if isinstance(event.source, SourceGroup):
+            quickreply("Leaving group...")
+            AyaBot.leave_group(event.source.group_id)
+
+        elif isinstance(event.source, SourceRoom):
+            quickreply("Leaving room...")
+            AyaBot.leave_room(event.source.room_id)
+
+        else:
+            quickreply("I can't leave a 1:1 chat.")
+
+    if isinstance(event.source, SourceGroup):
+        player_id = event.source.group_id
+    elif isinstance(event.source, SourceRoom):
+        player_id = event.source.room_id
+    else:
+        player_id = event.source.user_id
+
+    if text[0] == '/':
+        command = text[1:]
+
+        if command.lower().strip().startswith('bye'):
+            bye()
+
+        if command.lower().strip().startswith('start'):
+            msg = start_game(player_id)
+            link = players[player_id].next_link()
+            AyaBot.reply_message(
+                event.reply_token, [
+                    TextSendMessage(text=msg),
+                    ImageSendMessage(
+                        original_content_url=link,
+                        preview_image_url=link
+                    ),
+                    TextSendMessage(text="Who is this person?")
+                ]
+            )
+
+        if command.lower().strip().startswith('restart'):
+            msg = start_game(player_id, force=True)
+            link = players[player_id].next_link()
+            AyaBot.reply_message(
+                event.reply_token, [
+                    TextSendMessage(text=msg),
+                    ImageSendMessage(
+                        original_content_url=link,
+                        preview_image_url=link
+                    ),
+                    TextSendMessage(text="Who is this person?")
+                ]
+            )
+
+        if command.lower().startswith('answer '):
+            if check(player_id):
+                name = command[len('answer '):]
+                result = players[player_id].answer(name)
+                if not players[player_id].finished():
+                    link = players[player_id].next_link()
+                    AyaBot.reply_message(
+                        event.reply_token, [
+                            TextSendMessage(text=result),
+                            ImageSendMessage(
+                                original_content_url=link,
+                                preview_image_url=link
+                            ),
+                            TextSendMessage(text="Who is this person?")
+                        ]
+                    )
+                else:
+                    AyaBot.reply_message(
+                        event.reply_token, [
+                            TextSendMessage(text=result),
+                            TextSendMessage(text=(
+                                "You've finished the game!\n"
+                                + players[player_id].status()))
+                        ]
+                    )
+
+        if command.lower().startswith('pass'):
+            if check(player_id):
+                result = players[player_id].answer('pass')
+                if not players[player_id].finished():
+                    link = players[player_id].next_link()
+                    AyaBot.reply_message(
+                        event.reply_token, [
+                            TextSendMessage(text=result),
+                            ImageSendMessage(
+                                original_content_url=link,
+                                preview_image_url=link
+                            ),
+                            TextSendMessage(text="Who is this person?")
+                        ]
+                    )
+                else:
+                    AyaBot.reply_message(
+                        event.reply_token, [
+                            TextSendMessage(text=result),
+                            TextSendMessage(text=(
+                                "You've finished the game!\n"
+                                + players[player_id].status()))
+                        ]
+                    )
+
+        if command.lower().strip().startswith('help'):
+            quickreply(help_msg)
+
+        if command.lower().strip().startswith('status'):
+            if check(player_id):
+                quickreply(players[player_id].status())
 
 
 if __name__ == "__main__":
