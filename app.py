@@ -44,13 +44,24 @@ dbx = dropbox.Dropbox(dropbox_access_token)
 AyaBot = LineBotApi(channel_access_token)
 handler = WebhookHandler(channel_secret)
 
-help_msg = ("/help: send this help message\n"
+about_msg = ("AyaBot - Beta\n"
+             "Get to know your FKUI 2017 friends!\n"
+             "---\n"
+             "Created by laymonage (CSUI 2017) for FKUI 2017\n"
+             "Suggested by skyselvlz\n"
+             "Source code available at https://github.com/skyselvlz/Aya\n"
+             "\n"
+             "Also check out @mjb5063s for a multi-purpose bot!\n")
+
+help_msg = ("/about: send the about message\n"
+            "/help: send this help message\n"
             "/bye: make me leave this chat room\n"
             "/start: start the game\n"
             "/restart: restart the game\n"
             "/answer <name>: answer the person in the picture with <name>\n"
             "/pass : skip the current person\n"
-            "/status: show your current game's status\n")
+            "/status: show your current game's status\n"
+            "/bugreport <message>: send a bug report to the developer")
 
 players = {}
 
@@ -59,6 +70,9 @@ guys = [guy.name.strip('.jpg')
 
 gals = [gal.name.strip('.jpg')
         for gal in dbx.files_list_folder(dropbox_path + '/female').entries]
+
+my_id = os.getenv('MY_USER_ID', None)
+reports = []
 
 
 class Player:
@@ -138,7 +152,7 @@ class Player:
         return ("{}/{} persons.\n"
                 "Correct: {} ({:.2f}%)\n"
                 "Wrong: {}\n"
-                "Skipped: {}\n"
+                "Skipped: {}"
                 .format(len(guys + gals) - len(self.progress),
                         len(guys + gals), self.correct,
                         self.correct/len(guys+gals)*100,
@@ -237,6 +251,12 @@ def handle_text_message(event):
     if text[0] == '/':
         command = text[1:]
 
+        if command.lower().strip().startswith('about'):
+            quickreply(about_msg)
+
+        if command.lower().strip().startswith('help'):
+            quickreply(help_msg)
+
         if command.lower().strip().startswith('bye'):
             bye()
 
@@ -323,12 +343,36 @@ def handle_text_message(event):
                         ]
                     )
 
-        if command.lower().strip().startswith('help'):
-            quickreply(help_msg)
-
         if command.lower().strip().startswith('status'):
             if check(player_id):
                 quickreply(players[player_id].status())
+
+        if command.lower().strip().startswith('bugreport '):
+            reports.append(command[len('bugreport '):])
+            quickreply("Bug report sent!")
+
+        if command.lower().strip().startswith('bugs'):
+            if event.source.user_id == my_id:
+                msg = '\n'.join(reports)
+                if msg:
+                    quickreply(msg)
+                else:
+                    quickreply("Empty.")
+            else:
+                quickreply("Not allowed.")
+
+        if command.lower().strip().startswith('bugdel '):
+            if event.source.user_id == my_id:
+                try:
+                    idx = int(command[len('bugdel '):])
+                    del reports[idx-1]
+                    quickreply("Removed.")
+                except ValueError:
+                    quickreply("Nope! Wrong index value.")
+                except IndexError:
+                    quickreply("Nope! Index not found.")
+            else:
+                quickreply("Not allowed.")
 
 
 if __name__ == "__main__":
