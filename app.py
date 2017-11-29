@@ -279,18 +279,19 @@ def handle_text_message(event):
                 )
 
         if command.lower().strip().startswith('restart'):
-            msg = start_game(player_id, force=True)
-            link = players[player_id].next_link()
-            AyaBot.reply_message(
-                event.reply_token, [
-                    TextSendMessage(text=msg),
-                    ImageSendMessage(
-                        original_content_url=link,
-                        preview_image_url=link
-                    ),
-                    TextSendMessage(text="Who is this person?")
-                ]
-            )
+            if start_game(player_id, force=True):
+                link = players[player_id].next_link()
+                msg = "Starting game..."
+                AyaBot.reply_message(
+                    event.reply_token, [
+                        TextSendMessage(text=msg),
+                        ImageSendMessage(
+                            original_content_url=link,
+                            preview_image_url=link
+                        ),
+                        TextSendMessage(text="Who is this person?")
+                    ]
+                )
 
         if command.lower().startswith('answer '):
             if check(player_id):
